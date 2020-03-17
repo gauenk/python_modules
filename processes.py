@@ -48,6 +48,7 @@ class PoissonProcess(object):
         bool_stationary = bool_stationary or rate_fxn_type == 'constant'
         bool_stationary = bool_stationary or rate_fxn_type == 'stationary'
         self.stationary = bool_stationary
+        print(rate_fxn_type,self.stationary)
 
         if self.stationary:
             self.lambda0 = rate_fxn
@@ -56,11 +57,14 @@ class PoissonProcess(object):
             self.rate_fxn = self.constant_rate_fxn
         else:
             self.parameter_measure = parameter_measure
-            self.rate_fxn_sampler = rate_fxn_sampler
+            self.rate_fxn_sampler = rate_fxn_sampler 
             self.rate_fxn = rate_fxn
         self.rate_ub = rate_ub
-        self.sim_via_thinning = False
-        self.sim_via_rejection_sampling = False
+        self.sim_interval_thinning = False
+        # self.sim_times_via_rate = False
+        # self.sim_N_via_param_msr = False
+        self.sim_interval_rs = False
+        self.nonstation_sim_check()
 
     # nonstationary simulation check
     def nonstation_sim_check(self):
@@ -68,39 +72,23 @@ class PoissonProcess(object):
         ! verify we have parmaters to simulate
         """
         # simulation using thinning
-        bool_simA = self.rate_fxn is not None \
+        self.sim_interval_thinning = self.rate_fxn is not None \
             and self.rate_ub is not None
-        self.sim_via_thinning = bool_simA
         # simulation using rejection sampling
-        """
-        Why does sampling rate funxtion require a time window?
-        - not true for non-stationary i don't think
-        - this is true for stationary.
-        Why?
-        no.... for stationary the rate function is exponential?
-        but this is not the same ~rate function~ as the constant \lambda...
-        So then what is the A_{v,v'} term?
-
-        We don't actually sample the "rate_fxn". rather we sample the 
-        associated distribution function of the rate_fxn.
-        e.g. rate_fxn(t) = f(t) / S(t); instead we simulate the 
-        rate function for the associated distribution f(t). Thus for 
-        "rate_fxn_simulation" this is actually simulating the associated 
-        distribution function.
-        """
-
-        bool_simB = self.rate_fxn_sampler is not None \
+        # self.sim_times_via_rate = self.rate_fxn_sampler is not None
+        # self.sim_N_via_param_msr = self.parameter_measure is not None
+        self.sim_interval_rs = self.rate_fxn_sampler is not None\
             and self.parameter_measure is not None
-        self.sim_via_rejection_sampling = bool_simA
 
     # stationary parameters
     def constant_parameter_measure(self,ts,te):
         tau = te - ts
         return self.lambda0 * tau
 
-    def constant_rate_fxn_sampler(self,ts,te):
-        # this should be an exponential then...
-        tau = te - ts
+    def constant_rate_fxn_sampler(self,tau):
+        # this should be an exponential then... 
+        # AND it is since the order stats of Exp
+        # is the same as a uniform. this is more efficient
         return npr.uniform(0,tau)
 
     def constant_rate_fxn(self,tau):
@@ -111,12 +99,13 @@ class PoissonProcess(object):
         if 'sample_type' not in kwargs:
             raise ValueError("No 'sample_type' provided. We need to know what we are sampling.")
         sample_type = kwargs['sample_type']
+        del kwargs['sample_type']
         if sample_type == 'hold_time':
-            return sample_hold_time(self,*args,**kwargs)
+            return self.sample_hold_time(*args,**kwargs)
         elif sample_type == 'conditional_N':
-            return sample_conditional_N(self,*args,**kwargs)
+            return self.sample_conditional_N(*args,**kwargs)
         elif sample_type == 'interval':
-            return sample_interval(self,*args,**kwargs)
+            return self.sample_interval(*args,**kwargs)
         else:
             raise ValueError("Uknown 'sample_type' = [{}]".format(sample_type))
 
@@ -138,36 +127,66 @@ class PoissonProcess(object):
             scale = 1/self.lambda0
             return npr.exponential(scale=scale,size=1)
         else:
-            return self.sample_hold_time_ns(n)
+            return self.rate_fxn_sampler()
 
     def sample_hold_time_ns(self,n=1):
         """
         sample n^th event times of a nonstationary (ns) poisson process
         """
-        if self.sim_via_thinning:
+        if self.sim_interval_thinning:
             while(True):
                 u = npr.uniform(0,1)
                 w = -np.log(u/self.rate_ub)
                 D = npr.uniform(0,1)
                 if D <= self.rate_fxn(w)/self.rate_ub:
-                    return t
-        elif self.sim_via_rejection_sampling:
-            tau = None
-            return self.rate_fxn_sampler(0,tau)
-        raise ValueError("No sampling method specified")
+                    return w
+        elif self.sim_times_via_rate:
+            raise ValueError("No sampling method specified")
         return None
 
     def sample_interval(self,tau,offset=0):
+        if self.stationary or self.sim_interval_rs:
+            return self.sample_interval_rs(tau,offset)
+        elif self.sim_interval_thinning:
+            return self.sample_interval_thinning(tau,offset)            
+        else:
+            raise ValueError("No simulation method available")
+
+    def sample_interval_thinning(self,tau,offset=0):
+        # requires bounded rate (intensity or hazard) function
+        print("sit")
+        samples = []
+        t = 0
+        s = 0
+        while(s < tau):
+            # sample exp
+            u = npr.uniform(0,1)
+            w = -np.log(u)/self.rate_ub
+            s = s + w
+            D = npr.uniform(0,1)
+            if D <= self.rate_fxn(s)/self.rate_ub:
+                samples.append(s)
+        if samples[-1] > tau: # remove "too long" endpoint
+            samples.pop()
+        return np.array(samples)
+
+    def sample_interval_rs(self,tau,offset=0):
         if tau <= 0:
             raise ValueError("Hold time must be positive. [{}]".format(tau))
         # [nonstationary] int_0^\tau \lambda(t) dt __OR__ \lambda * t [stationary]
         mean = self.parameter_measure(0,tau)
+        print("mean: {}".format(mean))
         N = npr.poisson( lam = mean )
         # --> rejection sampling <--
         samples = []
         i = 0
         while (i < N):
-            sample = self.rate_fxn_sampler(0,tau)
+            if self.stationary:
+                sample = self.rate_fxn_sampler(tau) # stationary
+            else:
+                sample = self.rate_fxn_sampler()
+            shape = 2
+            sample = npr.weibull(shape,size=1)[0]
             if sample <= tau:
                 samples.append(sample)
                 i += 1
