@@ -63,7 +63,7 @@ class PoissonProcess(object):
         self.sim_interval_thinning = False
         # self.sim_times_via_rate = False
         # self.sim_N_via_param_msr = False
-        self.sim_interval_rs = False
+        self.sim_traj_weird = False
         self.nonstation_sim_check()
 
     # nonstationary simulation check
@@ -77,7 +77,7 @@ class PoissonProcess(object):
         # simulation using rejection sampling
         # self.sim_times_via_rate = self.rate_fxn_sampler is not None
         # self.sim_N_via_param_msr = self.parameter_measure is not None
-        self.sim_interval_rs = self.rate_fxn_sampler is not None\
+        self.sim_traj_weird = self.rate_fxn_sampler is not None\
             and self.parameter_measure is not None
 
     # stationary parameters
@@ -94,6 +94,7 @@ class PoissonProcess(object):
     def constant_rate_fxn(self,tau):
         return self.lambda0
 
+    
     def sample(self,*args,**kwargs):
         print("REFACTORED CODE. THIS MAY NOT BE THE SAMPLING YOU WANT!")
         if 'sample_type' not in kwargs:
@@ -104,8 +105,8 @@ class PoissonProcess(object):
             return self.sample_hold_time(*args,**kwargs)
         elif sample_type == 'conditional_N':
             return self.sample_conditional_N(*args,**kwargs)
-        elif sample_type == 'interval':
-            return self.sample_interval(*args,**kwargs)
+        elif sample_type == 'trajectory':
+            return self.sample_trajectory(*args,**kwargs)
         else:
             raise ValueError("Uknown 'sample_type' = [{}]".format(sample_type))
 
@@ -114,8 +115,9 @@ class PoissonProcess(object):
         Samples the time to the n^th event
 
         Homogenous Poisson Process
-        -> time to kth event is Erlang distribution 
         -> time to first event is exponential
+        -> time to kth event is Erlang (Gamma) distribution 
+           -> sum of k exponentials
 
         Nonhomogenous Poisson Process
         -> ???
@@ -144,17 +146,21 @@ class PoissonProcess(object):
             raise ValueError("No sampling method specified")
         return None
 
-    def sample_interval(self,tau,offset=0):
-        if self.stationary or self.sim_interval_rs:
-            return self.sample_interval_rs(tau,offset)
+    # def sample_trajectory(self,*args,**kwargs):
+    #     pass
+    def sample_trajectory(self,T,offset=0):
+        if self.stationary or self.sim_traj_weird:
+            return self.sample_trajectory_weird(T,offset)
         elif self.sim_interval_thinning:
-            return self.sample_interval_thinning(tau,offset)            
+            return self.sample_trajectory_thinning(T,offset)            
         else:
             raise ValueError("No simulation method available")
 
-    def sample_interval_thinning(self,tau,offset=0):
+    def sample_trajectory_weird(self,T,offset):
+        return None
+
+    def sample_trajectory_thinning(self,T,offset=0):
         # requires bounded rate (intensity or hazard) function
-        print("sit")
         samples = []
         t = 0
         s = 0
@@ -169,32 +175,6 @@ class PoissonProcess(object):
         if samples[-1] > tau: # remove "too long" endpoint
             samples.pop()
         return np.array(samples)
-
-    def sample_interval_rs(self,tau,offset=0):
-        if tau <= 0:
-            raise ValueError("Hold time must be positive. [{}]".format(tau))
-        # [nonstationary] int_0^\tau \lambda(t) dt __OR__ \lambda * t [stationary]
-        mean = self.parameter_measure(0,tau)
-        print("mean: {}".format(mean))
-        N = npr.poisson( lam = mean )
-        # --> rejection sampling <--
-        samples = []
-        i = 0
-        while (i < N):
-            if self.stationary:
-                sample = self.rate_fxn_sampler(tau) # stationary
-            else:
-                sample = self.rate_fxn_sampler()
-            shape = 2
-            sample = npr.weibull(shape,size=1)[0]
-            if sample <= tau:
-                samples.append(sample)
-                i += 1
-        samples = np.array(sorted(samples))
-        # handles the offset by interval
-        if len(samples) > 0: 
-            samples = samples + offset 
-        return samples
 
     def l(self,*args,**kwargs):
         return self.likelihood(*args,**kwargs)
